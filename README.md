@@ -1,4 +1,4 @@
-# padel-autobook
+# Padel automatic court bookings
 
 Polls Playtomic and books a padel court at your club when a slot matching your
 targets opens up **and your (member) price is at or below `max_price`** (0 = free only).
