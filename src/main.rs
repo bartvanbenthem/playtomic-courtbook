@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::api::{Credentials, Playtomic};
-use crate::booker::Booker;
+use crate::booker::{Booker, Next};
 use crate::config::Config;
 
 /// Books free (member) padel courts on Playtomic as soon as they open up.
@@ -73,12 +73,11 @@ async fn main() -> Result<()> {
             cfg.dry_run |= dry_run;
             let interval = Duration::from_secs(cfg.poll_interval_minutes * 60);
             let mut booker = Booker::new(cfg, Credentials::from_env()?).await?;
-            if once {
-                return booker.run_once().await;
-            }
             loop {
-                if let Err(e) = booker.run_once().await {
-                    error!("poll failed: {e:#}");
+                // Errors are not retried: a refused quote or a rate limit would
+                // just recur every poll.
+                if booker.run_once().await? == Next::Stop || once {
+                    break;
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(interval) => {}

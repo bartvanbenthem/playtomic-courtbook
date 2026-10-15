@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
@@ -93,6 +93,14 @@ fn pick_method<'a>(methods: &'a [PaymentMethod], preference: &[String]) -> Optio
         .or(methods.first())
 }
 
+/// What the caller should do after a poll.
+#[derive(Debug, PartialEq)]
+pub enum Next {
+    Poll,
+    /// The open booking limit is reached; polling again cannot book anything.
+    Stop,
+}
+
 pub struct Booker {
     cfg: Config,
     creds: Credentials,
@@ -114,18 +122,28 @@ impl Booker {
         Ok(Self { cfg, creds, api, notifier: reqwest::Client::new(), court_names })
     }
 
-    pub async fn run_once(&mut self) -> Result<()> {
-        self.api.ensure_login(&self.creds).await?;
+    /// One poll. Any API error (quote failed, conflict, rate limited, ...) is
+    /// returned so the caller stops instead of retrying it every poll.
+    pub async fn run_once(&mut self) -> Result<Next> {
         let mut state = State::load(&self.cfg.state_file)?;
         let now = Utc::now();
         state.prune(now);
         let now_local = now.with_timezone(&self.cfg.timezone).naive_local();
-        let mut quotes_left = self.cfg.max_quotes_per_run;
         state.open_bookings = state.count_open(now_local);
+        // Checked before logging in, so a full quota costs no requests at all.
         if state.open_bookings >= self.cfg.max_open_bookings {
-            info!(open = state.open_bookings, max = self.cfg.max_open_bookings, "open booking limit reached, not booking");
-            return state.save(&self.cfg.state_file);
+            info!(open = state.open_bookings, max = self.cfg.max_open_bookings, "open booking limit reached, stopping");
+            state.save(&self.cfg.state_file)?;
+            return Ok(Next::Stop);
         }
+        let result = self.poll(&mut state, now, now_local).await;
+        state.save(&self.cfg.state_file)?;
+        result
+    }
+
+    async fn poll(&mut self, state: &mut State, now: DateTime<Utc>, now_local: NaiveDateTime) -> Result<Next> {
+        self.api.ensure_login(&self.creds).await?;
+        let mut quotes_left = self.cfg.max_quotes_per_run;
 
         'days: for offset in 0..=i64::from(self.cfg.days_ahead) {
             let date = now_local.date() + Duration::days(offset);
@@ -136,13 +154,11 @@ impl Booker {
             if !self.cfg.targets.iter().any(|t| t.weekdays.contains(&date.weekday())) {
                 continue;
             }
-            let availability = match self.api.availability(&self.cfg.tenant_id, date).await {
-                Ok(a) => a,
-                Err(e) => {
-                    warn!(%date, "availability failed: {e:#}");
-                    continue;
-                }
-            };
+            let availability = self
+                .api
+                .availability(&self.cfg.tenant_id, date)
+                .await
+                .with_context(|| format!("availability for {date} failed"))?;
             let candidates = candidates_for_date(&self.cfg, date, now_local, &availability, &self.court_names);
             debug!(%date, matching = candidates.len(), "checked availability");
 
@@ -157,21 +173,17 @@ impl Booker {
                 }
                 quotes_left -= 1;
 
-                let intent = match self
+                // A refusal here (409 conflict, club booking limit, 429, ...) would
+                // repeat on every poll, so it ends the run.
+                let intent = self
                     .api
                     .create_payment_intent(&self.cfg.tenant_id, &c.resource_id, c.start_api, c.duration)
                     .await
-                {
-                    Ok(i) => i,
-                    Err(e) => {
-                        warn!(court = %c.court_name, start = %c.start_local, "quote failed: {e:#}");
-                        continue;
-                    }
-                };
+                    .with_context(|| format!("quote failed for {} at {}", c.court_name, c.start_local))?;
                 match intent.price {
-                    None => warn!(
-                        court = %c.court_name, start = %c.start_local,
-                        "could not read price from payment intent, skipping: {}", intent.raw
+                    None => bail!(
+                        "could not read price from payment intent for {} at {}: {}",
+                        c.court_name, c.start_local, intent.raw
                     ),
                     Some(price) if price > self.cfg.max_price => {
                         info!(court = %c.court_name, start = %c.start_local, price, "not free, skipping");
@@ -192,16 +204,19 @@ impl Booker {
                         state.save(&self.cfg.state_file)?;
                         info!("{}", booking.summary());
                         self.notify(&booking.summary()).await;
+                        if booking.status != BookingStatus::Confirmed {
+                            bail!("booking not confirmed, stopping");
+                        }
                         if state.open_bookings >= self.cfg.max_open_bookings {
-                            info!(open = state.open_bookings, "open booking limit reached");
-                            break 'days;
+                            info!(open = state.open_bookings, "open booking limit reached, stopping");
+                            return Ok(Next::Stop);
                         }
                         continue 'days;
                     }
                 }
             }
         }
-        state.save(&self.cfg.state_file)
+        Ok(Next::Poll)
     }
 
     /// Never fails: anything short of a clean success is recorded as

@@ -23,7 +23,7 @@ Use `RUST_LOG=padel_autobook=debug` for more detail.
 
 ## How it decides
 
-0. If `max_open_bookings` (default 3) booked slots are still ahead, do nothing.
+0. If `max_open_bookings` (default 3) booked slots are still ahead, stop.
 1. For each day in `days_ahead` with a matching target and no booking yet, fetch availability.
 2. Keep slots that match a target's weekday, start window and duration (and `courts`, if set).
 3. For the best candidates, create a payment intent. This is Playtomic's checkout
@@ -34,3 +34,8 @@ Use `RUST_LOG=padel_autobook=debug` for more detail.
 `state.json` records bookings and `open_bookings`, the number not yet played.
 Only bookings made by this tool are counted. If a confirmation fails or looks odd, the day is
 marked `Uncertain` and blocked; check the app and remove the entry to retry.
+
+The process exits instead of retrying when the limit is reached (also right after
+a booking fills it), or when any request fails: a refused quote (e.g. a 409 conflict or the
+club's own reservation limit), a rate limit, an unreadable price or a failed confirmation.
+Fix the cause (or wait until a booking has been played) and start it again.
