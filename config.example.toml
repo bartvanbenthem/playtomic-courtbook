@@ -1,0 +1,49 @@
+# Copy to config.toml. Credentials come from the environment:
+#   PLAYTOMIC_EMAIL / PLAYTOMIC_PASSWORD
+
+# Club id; find it with `padel-autobook search "<club name>"`.
+tenant_id = "0000-0000-0000-0000"
+timezone = "Europe/Amsterdam"
+
+poll_interval_minutes = 15
+days_ahead = 14
+
+# Keep true until the logs show the right slots being picked.
+# Dry run still creates payment intents (to learn your member price) but never confirms them.
+dry_run = true
+
+# Only book when Playtomic quotes your price at or below this. 0 = free courts only.
+max_price = 0
+
+max_quotes_per_run = 6
+
+# Don't book while this many booked slots are still ahead (counted from state_file).
+max_open_bookings = 3
+
+# Optional court allowlist (resource id or name), in order of preference.
+# `padel-autobook courts` lists them. Empty = any court.
+courts = []
+
+state_file = "state.json"
+
+# Verify against the app during the dry run: if logged local times are off by
+# your UTC offset, flip this.
+slot_times_utc = true
+
+payment_method_preference = ["OFFER", "MERCHANT_WALLET", "CREDIT_CARD"]
+
+# Optional: POSTs a plain-text message on every booking, e.g. https://ntfy.sh/<your-topic>
+# notify_url = "https://ntfy.sh/my-padel-bookings"
+
+# One booking per day at most. Earlier targets win when several match.
+[[targets]]
+weekdays = ["Tue", "Thu"]
+earliest_start = "19:00"
+latest_start = "20:30"
+durations = [90]
+
+[[targets]]
+weekdays = ["Sat"]
+earliest_start = "10:00"
+latest_start = "13:00"
+durations = [90, 120]
