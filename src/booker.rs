@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::api::{self, Credentials, PaymentIntent, PaymentMethod, Playtomic, ResourceAvailability};
 use crate::config::Config;
@@ -59,6 +59,7 @@ pub fn candidates_for_date(
             if start_local.date() != date || start_local <= now_local {
                 continue;
             }
+            trace!(court = %court_name, start = %start_local, duration = slot.duration, price = ?slot.price, "free slot");
             let Some(target) = cfg.targets.iter().position(|t| t.matches(start_local, slot.duration)) else {
                 continue;
             };
